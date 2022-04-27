@@ -17,6 +17,7 @@ param publisherName string
 param publisherEmail string
 
 var logAnalyticsWorkspaceName = 'logs-${applicationName}'
+var logAnalyticsWorkspaceSkuName = 'PerGB2018'
 var appInsightsName = 'appsins-${applicationName}'
 var containerRegistryName = 'acr${applicationName}'
 var containerRegistrySkuName = 'Basic'
@@ -24,13 +25,17 @@ var environmentName = 'env-${applicationName}'
 var containerWebAppName = 'bookstoreweb'
 var containerApiAppName = 'bookstoreapi'
 var apimInstanceName = 'apim-${applicationName}'
+var apimSkuName = 'Developer'
+var cosmosDbAccountName = 'cosmosdb-${applicationName}'
+var bookDatabaseName = 'BooksDB'
+var bookContainerName = 'Books'
 
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2021-12-01-preview' = {
   name: logAnalyticsWorkspaceName
   location: location
   properties: {
     sku: {
-      name: 'PerGB2018'
+      name: logAnalyticsWorkspaceSkuName
     }
   }
 }
@@ -83,6 +88,26 @@ resource bookstoreApiContainerApp 'Microsoft.App/containerApps@2022-01-01-previe
         {
           name: 'registrypassword'
           value: containerRegistry.listCredentials().passwords[0].value
+        }
+        {
+          name: 'cosmosdbendpoint'
+          value: cosmosDbAccount.properties.documentEndpoint
+        }
+        {
+          name: 'databasename'
+          value: database.name
+        }
+        {
+          name: 'containername'
+          value: container.name
+        }
+        {
+          name: 'appinsightsinstrumentationkey'
+          value: appInsights.properties.InstrumentationKey 
+        }
+        {
+          name: 'appinsightsconnectionstring'
+          value: 'InstrumentationKey=${appInsights.properties.InstrumentationKey}'
         }
       ]
       registries: [
@@ -172,10 +197,79 @@ resource apim 'Microsoft.ApiManagement/service@2021-08-01' = {
   location: location
   sku: {
     capacity: 1
-    name: 'Developer'
+    name: apimSkuName
   }
   properties: {
     publisherEmail: publisherEmail
     publisherName: publisherName
+  }
+}
+
+resource cosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2021-11-15-preview' = {
+  name: cosmosDbAccountName
+  location: location
+  properties: {
+    databaseAccountOfferType: 'Standard' 
+    locations: [
+      {
+        locationName: location
+        failoverPriority: 0
+        isZoneRedundant: false
+      }
+    ]
+    consistencyPolicy: {
+      defaultConsistencyLevel: 'Session'
+    }
+    enableAnalyticalStorage: true
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+}
+
+resource database 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2021-11-15-preview' = {
+  name: bookDatabaseName
+  parent: cosmosDbAccount
+  properties: {
+    resource: {
+      id: bookDatabaseName
+    }
+  }
+}
+
+resource container 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2021-11-15-preview' = {
+  name: bookContainerName
+  parent: database
+  properties: {
+    resource: {
+      id: bookContainerName
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        includedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+      }
+      partitionKey: {
+        paths: [
+          '/id'
+        ]
+        kind: 'Hash'
+      }
+    }
+    options: {
+      autoscaleSettings: {
+        maxThroughput: 4000
+      }
+    }
+  }
+}
+
+module sqlRoleAssignment 'modules/sqlRoleAssignment.bicep' = {
+  name: 'sqlRoleAssignment'
+  params: {
+    cosmosDbAccountName: cosmosDbAccount.name
+    principalId: bookstoreApiContainerApp.identity.principalId
   }
 }
